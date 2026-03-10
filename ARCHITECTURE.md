@@ -1,103 +1,97 @@
-# ARES Protocol Architecture
+# ARES Protocol Architecture (My Design Perspective)
 
 ## Overview
 
-ARES Protocol is a secure treasury execution system that protects against governance attacks, signature replay, flash-loan manipulation, and other exploit vectors while managing assets worth over $500 million. The system architecture, module separation, security boundaries, and trust assumptions are all covered in this document.
+When I designed the ARES Protocol treasury system, my primary objective was to build an infrastructure capable of securely managing assets worth more than $500 million while minimizing exposure to common governance and smart contract attack vectors. In the DeFi ecosystem, treasury contracts are among the most attractive targets for attackers, so I prioritized defenses against governance manipulation, flash‑loan attacks, signature replay, and rushed proposal execution.
 
-## System Architecture
+To address these risks, I adopted a modular, defense‑in‑depth architecture. Instead of placing all responsibilities into a single contract, I divided the protocol into multiple modules, each responsible for a specific function. This separation reduces complexity within each component and allows security controls to be enforced independently.
 
-The protocol follows a modular, defense-in-depth architecture where each component has a specific security responsibility. The core `AresTreasury` contract integrates four independent modules:
+At the center of the system sits the `AresTreasury` contract, which coordinates four core modules:
 
-1. **ProposalModule** - Transaction proposal lifecycle management
-2. **AuthorizationModule** - Cryptographic signature verification with replay protection
-3. **RewardDistributionModule** - Merkle-based contributor reward distribution
-4. **GovernanceDefenseModule** - Economic attack mitigation
+1. **ProposalModule** – manages the lifecycle of treasury proposals
+2. **AuthorizationModule** – verifies cryptographic signatures and prevents replay
+3. **RewardDistributionModule** – distributes contributor rewards using Merkle proofs
+4. **GovernanceDefenseModule** – protects the system from economic governance attacks
 
-### Module Separation Rationale
+This modular architecture ensures that every component has a clearly defined responsibility, which improves auditability, maintainability, and overall system security.
 
-Each module is deployed as a separate contract to enforce clear security boundaries. This separation provides several benefits:
+---
 
-- **Isolation of Concerns**: Each module handles a specific security domain. The AuthorizationModule only manages signatures and nonces, while the ProposalModule only manages proposal state transitions.
-- **Independent Upgradeability**: Modules can be upgraded independently without affecting the entire system.
-- **Gas Efficiency**: Modules are only called when their functionality is needed.
-- **Audit Clarity**: Security auditors can verify each module's security properties independently.
+## Proposal Lifecycle Security
 
-## Security Boundaries
-
-### Proposal Lifecycle Security
-
-The proposal system implements a three-phase lifecycle: **Pending → Committed → Queued → Executed**. Each transition has specific security requirements:
-
-- **Pending to Committed**: Requires explicit commit with hash, establishing the proposer's intent.
-- **Committed to Queued**: Requires (a) commit phase duration (24 hours) to elapse, (b) minimum number of cryptographic approvals (default 2).
-- **Queued to Executed**: Requires time delay (48 hours) and must occur within execution window (7 days).
-
-This phased approach prevents rushed executions and provides time for governance participants to review proposals.
-
-### Cryptographic Authorization Boundary
-
-The AuthorizationModule implements EIP-712 structured signatures with the following protections:
-
-- **Domain Separator**: Includes chain ID and contract address to prevent cross-chain replay and domain collisions.
-- **Expiry**: Each signature has a timestamp after which it cannot be used.
-- **Nonce Tracking**: Per-signer nonces prevent replay of old signatures.
-- **Digest Tracking**: Used digests are recorded to prevent any signature from being used twice.
-
-The authorization boundary is strict: once a digest is marked as used, it cannot be reused regardless of nonce or expiry.
-
-### Reward Distribution Boundary
-
-The Merkle-based distribution system separates concerns between:
-
-- **Round Creation**: Only treasury/governance can create distribution rounds.
-- **Claim Verification**: Users must provide valid Merkle proofs; the contract only verifies, never computes.
-- **State Tracking**: Claims are tracked per (roundId, index) pair to prevent double-claims.
-
-This design allows thousands of recipients without excessive gas costs, as each claim is O(log n) in gas.
-
-### Governance Defense Boundary
-
-The GovernanceDefenseModule operates as a gatekeeper with two primary mechanisms:
-
-1. **Transaction Limits**: Single transactions cannot exceed 5% of treasury balance without triggering cooldown.
-2. **Holding Period**: Governance participants must hold tokens for 7 days before proposing, preventing flash-loan attacks.
-
-These mechanisms operate at the treasury boundary, validating all outbound transfers.
-
-## Trust Assumptions
-
-### Minimal Trust Assumptions
-
-1. **Governance Honesty**: The system assumes governance participants act in the protocol's best interest. However, the time delays and multi-sig requirements provide checks against individual bad actors.
-
-2. **Economic Rationality**: The holding period and transaction limits assume attackers are economically rational and will not lock capital for extended periods.
-
-3. **Merkle Root Integrity**: The reward distribution assumes the Merkle root provided by governance accurately reflects intended distributions. Users must trust that their claims are included.
-
-### Trust Minimization Mechanisms
-
-- **Time Delays**: All proposals must wait 48 hours after queueing, giving stakeholders time to react to malicious proposals.
-- **Multi-Sig Approvals**: Default 2 approvals required prevents single points of failure.
-- **Execution Window**: Proposals expire after 7 days, preventing stale proposals from being executed.
-- **Reentrancy Guards**: All state-changing functions use reentrancy guards to prevent reentrancy attacks.
-
-## Module Interaction Flow
+Every treasury action follows a structured proposal lifecycle:
 
 ```
-User → AresTreasury → ProposalModule → AuthorizationModule
-                           ↓
-                    GovernanceDefenseModule
-                           ↓
-                    RewardDistributionModule
+Pending → Committed → Queued → Executed
 ```
 
-1. User submits proposal through AresTreasury
-2. AresTreasury validates holding period via GovernanceDefenseModule
-3. ProposalModule manages state transitions
-4. AuthorizationModule verifies cryptographic approvals
-5. GovernanceDefenseModule validates transaction limits before execution
-6. RewardDistributionModule handles claims independently
+Each stage introduces additional security guarantees.
+
+| Transition | Requirements |
+|---|---|
+| Pending → Committed | Proposer submits a commitment hash |
+| Committed → Queued | 24‑hour minimum commit duration + required cryptographic approvals (default: 2) |
+| Queued → Executed | 48‑hour mandatory delay; must execute within 7‑day window or expires |
+
+These timing constraints prevent rushed decisions and give governance participants enough time to review potentially risky actions.
+
+---
+
+## Cryptographic Authorization
+
+Signature verification is handled by the `AuthorizationModule` using **EIP‑712** structured signatures. This standard provides secure off‑chain signing while allowing on‑chain verification.
+
+To prevent replay attacks, several safeguards are implemented:
+
+- **Domain separator** – incorporates the chain ID and contract address, preventing reuse across networks or contracts.
+- **Expiration timestamps** – signatures cannot be used indefinitely.
+- **Per‑signer nonce tracking** – previously used signatures cannot be replayed.
+- **Digest recording** – every executed signature digest is permanently recorded, ensuring no authorization can ever be reused once consumed.
+
+---
+
+## Reward Distribution Design
+
+ARES Protocol distributes contributor rewards through a **Merkle tree‑based system**. This design allows thousands of recipients to claim rewards without incurring excessive gas costs.
+
+1. Governance creates distribution rounds by submitting a Merkle root representing the full reward dataset.
+2. Users claim rewards by providing a Merkle proof demonstrating their address and allocation are included in the tree.
+3. The contract verifies the proof but never computes the tree itself, keeping on‑chain computation minimal.
+4. Each claim is tracked using a `(roundId, index)` pair to prevent double claims.
+
+---
+
+## Governance Attack Protection
+
+Because governance systems can be exploited economically, I implemented the `GovernanceDefenseModule` to act as a protective gatekeeper.
+
+### Transaction Limit
+Any single treasury transaction exceeding **5% of the treasury balance** triggers a cooldown mechanism. This reduces the risk of sudden large withdrawals draining the treasury.
+
+### Holding Period Requirement
+Governance participants must hold their tokens for at least **7 days** before they are allowed to submit proposals. This rule makes flash‑loan governance attacks significantly more difficult.
+
+
+---
+
+## Trust Assumptions and Safeguards
+
+Although the system is designed to minimize trust, a few assumptions remain:
+
+- Governance participants are expected to act in the protocol's best interest.
+- Reward recipients rely on governance to provide an accurate Merkle root during distribution rounds.
+
+ safeguards:
+
+| Safeguard | Description |
+|---|---|
+| Execution delay | Mandatory 48‑hour delay before any proposal executes |
+| Multi‑signature approvals | Multiple cryptographic approvals required |
+| Execution window | 7‑day window after which proposals expire |
+| Reentrancy protection | Applied to all state‑changing functions |
+
+---
 
 ## Conclusion
 
-The ARES Protocol architecture prioritizes security through modular separation, defense-in-depth, and minimal trust assumptions. Each module enforces its own security boundary while contributing to the overall system security. The design explicitly addresses known attack vectors from recent ecosystem failures while maintaining operational flexibility for legitimate governance operations.
+In designing ARES Protocol, I prioritized security, modularity, and strong governance safeguards. By separating responsibilities across multiple modules and enforcing strict proposal lifecycles, the protocol minimizes trust assumptions while defending against many common DeFi attack vectors. Each module operates within a clear security boundary, contributing to the overall resilience of the treasury system.
